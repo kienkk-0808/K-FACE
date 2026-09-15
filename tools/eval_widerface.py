@@ -231,6 +231,14 @@ def main():
     samples = ds.samples[: args.max_images] if args.max_images else ds.samples
     print(f"images={len(samples)} size={args.size} score_floor={args.score_floor} nms={args.nms} iou={args.iou}")
 
+    if sum(len(s[1]) for s in samples) == 0:
+        ap.error(
+            f"'{args.label}' has no ground-truth boxes (looks like a plain "
+            "image list, e.g. wider_val.txt) — AP can't be computed from it. "
+            "Point --label at the annotated val label.txt (RetinaFace format, "
+            "same as the train label.txt) instead."
+        )
+
     runners = []
     if args.kface:
         runners.append(("K-FACE", KFaceRunner(args.kface, args.size, args.threads)))

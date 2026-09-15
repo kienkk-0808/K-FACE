@@ -79,6 +79,17 @@ def main():
 
     dataset = WiderFaceDataset(cfg["data"]["train_label"], cfg["data"]["train_images"],
                                transform=TrainTransform(size=size))
+    total_boxes = sum(len(s[1]) for s in dataset.samples)
+    if total_boxes == 0:
+        raise ValueError(
+            f"'{cfg['data']['train_label']}' has zero ground-truth boxes across "
+            f"{len(dataset.samples)} images — looks like a plain image list "
+            "(e.g. wider_val.txt), not an annotated label.txt. Training on it "
+            "would silently converge to 'always predict no face' with no error. "
+            "Point train_label at the annotated RetinaFace-format label.txt instead."
+        )
+    print(f"train images={len(dataset.samples)} boxes={total_boxes} "
+          f"(avg {total_boxes / len(dataset.samples):.1f}/image)")
     num_workers = tcfg["num_workers"]
     loader = DataLoader(dataset, batch_size=tcfg["batch_size"], shuffle=True,
                         num_workers=num_workers, collate_fn=collate_fn,

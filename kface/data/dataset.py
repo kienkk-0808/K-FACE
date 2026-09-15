@@ -8,6 +8,13 @@ WIDER FACE dataset loader, RetinaFace-style label format:
 
 Faces without landmark annotations use -1 for all landmark fields; those
 boxes still train cls+box but are masked out of the landmark loss.
+
+Also accepts the plain WIDER FACE val image list (e.g. `wider_val.txt`,
+one image path per line, no leading "#" and no box rows) — every line that
+doesn't parse as a numeric box row is treated as an image path instead.
+That file carries no ground truth, so samples loaded from it have zero
+boxes; it's fine for running inference but useless for AP evaluation
+(use the annotated val `label.txt` for that instead).
 """
 import os
 import cv2
@@ -40,12 +47,17 @@ class WiderFaceDataset(Dataset):
                 ))
 
         for line in lines:
-            if line.startswith("#"):
+            body = line[1:].strip() if line.startswith("#") else line
+            try:
+                vals = list(map(float, body.split()))
+            except ValueError:
+                # not a numeric box row -> this line is an image path,
+                # whether or not it has the "#" prefix (see module docstring)
                 flush()
-                img_path = os.path.join(self.image_root, line[1:].strip())
+                img_path = os.path.join(self.image_root, body)
                 boxes, kps, has_kps = [], [], []
                 continue
-            vals = list(map(float, line.split()))
+
             x, y, w, h = vals[0:4]
             boxes.append([x, y, x + w, y + h])
             if len(vals) >= 19 and vals[4] >= 0:
