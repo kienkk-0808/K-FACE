@@ -1,0 +1,28 @@
+# K-FACE "nano" — tuned for >60 FPS on CPU (ONNXRuntime, fp32, 320x320, single thread~4 threads)
+model:
+  width_mult: 0.75
+  depth_mult: 1.0
+  neck_channels: 48
+  num_anchors: 2
+  strides: [8, 16, 32]
+  scales_per_stride: [[16, 32], [64, 128], [256, 512]]
+
+data:
+  train_label: data/widerface/train/label.txt
+  train_images: data/widerface/train/images
+  val_label: data/widerface/val/label.txt
+  val_images: data/widerface/val/images
+
+train:
+  input_size: 320
+  batch_size: 64
+  num_workers: 8
+  epochs: 300
+  lr: 0.01
+  weight_decay: 0.0005
+  pos_iou: 0.4
+  neg_iou: 0.3
+  box_weight: 2.0
+  kps_weight: 1.0
+  log_interval: 20
+  output_dir: runs/kface_n
