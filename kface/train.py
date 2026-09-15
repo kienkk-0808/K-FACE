@@ -61,13 +61,34 @@ def main():
     size = tcfg["input_size"]
     strides = tuple(mcfg["strides"])
 
+    use_amp = device.type == "cuda"
+    # bf16 has the same exponent range as fp32 (no gradient underflow/overflow),
+    # so it needs no GradScaler and is what Ada-generation GPUs (e.g. L4) run
+    # tensor-core matmuls/convs at natively — cheaper and simpler than fp16.
+    amp_dtype = torch.bfloat16 if tcfg.get("amp_dtype", "bf16") == "bf16" else torch.float16
+    use_scaler = use_amp and amp_dtype == torch.float16
+    channels_last = tcfg.get("channels_last", True) and use_amp
+
+    if use_amp:
+        # TF32 speeds up the fp32 fallback paths (BN stats, loss) for free on
+        # Ampere+/Ada GPUs; cudnn.benchmark autotunes conv algorithms since
+        # every batch here has the same fixed input shape.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
     dataset = WiderFaceDataset(cfg["data"]["train_label"], cfg["data"]["train_images"],
                                transform=TrainTransform(size=size))
+    num_workers = tcfg["num_workers"]
     loader = DataLoader(dataset, batch_size=tcfg["batch_size"], shuffle=True,
-                        num_workers=tcfg["num_workers"], collate_fn=collate_fn,
-                        drop_last=True, pin_memory=device.type == "cuda")
+                        num_workers=num_workers, collate_fn=collate_fn,
+                        drop_last=True, pin_memory=device.type == "cuda",
+                        persistent_workers=num_workers > 0,
+                        prefetch_factor=tcfg.get("prefetch_factor", 4) if num_workers > 0 else None)
 
     model = build_model(cfg).to(device)
+    if channels_last:
+        model = model.to(memory_format=torch.channels_last)
     ema = ModelEMA(model)
 
     anchors = generate_anchors(size, strides=strides,
@@ -90,7 +111,7 @@ def main():
         return 0.5 * (1 + math.cos(math.pi * p))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scaler = torch.amp.GradScaler(enabled=device.type == "cuda")
+    scaler = torch.amp.GradScaler(enabled=use_scaler)
 
     start_epoch = 0
     if args.resume:
@@ -110,23 +131,30 @@ def main():
         running = {"loss": 0.0, "loss_cls": 0.0, "loss_box": 0.0, "loss_kps": 0.0}
         for step, (imgs, targets) in enumerate(loader):
             imgs = imgs.to(device, non_blocking=True)
+            if channels_last:
+                imgs = imgs.to(memory_format=torch.channels_last)
 
-            with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 cls_outs, box_outs, kps_outs = model(imgs)
             cls, box, kps = model.flatten_all(cls_outs, box_outs, kps_outs)
             losses = criterion(cls.float(), box.float(), kps.float(), anchors, targets)
 
             optimizer.zero_grad(set_to_none=True)
-            scaler.scale(losses["loss"]).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-            scaler.step(optimizer)
-            scaler.update()
+            if use_scaler:
+                scaler.scale(losses["loss"]).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                losses["loss"].backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+                optimizer.step()
             scheduler.step()
             ema.update(model)
 
             for k in running:
-                running[k] += float(losses[k])
+                running[k] += float(losses[k].detach())
             if step % tcfg["log_interval"] == 0:
                 n = step + 1
                 msg = " ".join(f"{k}={running[k] / n:.4f}" for k in running)

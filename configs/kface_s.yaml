@@ -24,9 +24,16 @@ data:
   val_images: data/widerface/val/images
 
 train:
-  input_size: 320
-  batch_size: 64
-  num_workers: 8
+  # Trained at 640 for small-face recall (anchor scales are in absolute
+  # pixels, so they don't need retuning); export/infer can still target a
+  # smaller size (e.g. 320) for CPU throughput — the model is fully
+  # convolutional and resolution-agnostic at inference time.
+  input_size: 640
+  batch_size: 64          # tuned for a single 24GB L4 (more params than kface_n); lower if you see OOM
+  num_workers: 12         # match to the GPU instance's vCPU count
+  prefetch_factor: 4
+  amp_dtype: bf16         # Ada tensor cores run bf16 natively; no GradScaler needed
+  channels_last: true
   epochs: 300
   lr: 0.02
   warmup_iters: 1000
