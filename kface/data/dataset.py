@@ -1,4 +1,6 @@
-"""WIDER FACE dataset loader, RetinaFace-style label format:
+"""Author: kienkk
+
+WIDER FACE dataset loader, RetinaFace-style label format:
 
     # 0--Parade/0_Parade_marchingband_1_849.jpg
     449 330 122 149 488.9 373.6 0.0 542.1 376.4 0.0 515.0 412.8 0.0 485.2 425.9 0.0 538.4 431.5 0.0 0.82

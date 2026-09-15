@@ -1,4 +1,6 @@
-"""K-FACE detector: backbone + neck + head, assembled for both training
+"""Author: kienkk
+
+K-FACE detector: backbone + neck + head, assembled for both training
 (raw per-stride tensors) and inference (flattened, decoded, NMS'd boxes+kps).
 """
 import torch
@@ -14,20 +16,22 @@ DEFAULT_SCALES = ((16, 32), (64, 128), (256, 512))
 
 
 class KFaceDetector(nn.Module):
-    def __init__(self, width_mult=1.0, depth_mult=1.0, neck_channels=64,
+    def __init__(self, stem_channels=16, stages=None, neck_channels=48,
+                 neck_smooth=("dw", "dense"), head_stem_blocks=1,
                  num_anchors=2, strides=STRIDES):
         super().__init__()
-        self.backbone = KFaceBackbone(width_mult=width_mult, depth_mult=depth_mult)
-        self.neck = KFaceNeck(self.backbone.out_channels, out_channels=neck_channels)
-        self.head = KFaceHead(neck_channels, num_anchors=num_anchors, strides=strides)
-        self.strides = strides
+        self.backbone = KFaceBackbone(stem_channels=stem_channels, stages=stages)
+        self.neck = KFaceNeck(self.backbone.out_channels, out_channels=neck_channels,
+                              smooth=tuple(neck_smooth))
+        self.head = KFaceHead(neck_channels, num_anchors=num_anchors,
+                              stem_blocks=head_stem_blocks, strides=strides)
+        self.strides = tuple(strides)
         self.num_anchors = num_anchors
 
     def forward(self, x):
         feats = self.backbone(x)
         feats = self.neck(feats)
-        cls_outs, box_outs, kps_outs = self.head(feats)
-        return cls_outs, box_outs, kps_outs
+        return self.head(feats)
 
     @staticmethod
     def flatten_head_output(t, last_dim):
@@ -48,9 +52,8 @@ class KFaceDetector(nn.Module):
 
     @torch.no_grad()
     def predict(self, x, anchors=None, conf_thresh=0.5, iou_thresh=0.4, scales=DEFAULT_SCALES):
-        """Inference helper (Python-side; the exported ONNX graph only goes
-        up to raw cls/box/kps outputs — decode+NMS run in tools/infer.py so
-        NMS thresholds can be tuned without re-exporting).
+        """Python-side inference helper. The exported ONNX graph stops at raw
+        cls/box/kps so decode + NMS thresholds can be tuned without re-export.
         """
         self.eval()
         cls_outs, box_outs, kps_outs = self.forward(x)
@@ -74,3 +77,17 @@ class KFaceDetector(nn.Module):
             keep = nms(boxes, sc, iou_thresh=iou_thresh)
             results.append((boxes[keep], landm[keep], sc[keep]))
         return results
+
+
+def build_model(cfg):
+    """Build a detector from the `model:` section of a config dict."""
+    m = cfg["model"]
+    return KFaceDetector(
+        stem_channels=m.get("stem_channels", 16),
+        stages=m["stages"],
+        neck_channels=m["neck_channels"],
+        neck_smooth=tuple(m.get("neck_smooth", ("dw", "dense"))),
+        head_stem_blocks=m.get("head_stem_blocks", 1),
+        num_anchors=m["num_anchors"],
+        strides=tuple(m["strides"]),
+    )

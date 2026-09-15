@@ -1,4 +1,6 @@
-"""Training-time augmentation: SSD-style random crop anchored on a face box,
+"""Author: kienkk
+
+Training-time augmentation: SSD-style random crop anchored on a face box,
 random horizontal flip, photometric distortion, resize+pad to a square input.
 Keeps boxes/landmarks consistent through every transform.
 """

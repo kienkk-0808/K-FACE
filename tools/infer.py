@@ -1,4 +1,6 @@
-"""ONNXRuntime CPU inference for an exported K-FACE model: draws boxes +
+"""Author: kienkk
+
+ONNXRuntime CPU inference for an exported K-FACE model: draws boxes +
 5-point landmarks, using kface.utils.box_utils for anchor decoding and NMS.
 
 Usage:

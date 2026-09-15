@@ -1,82 +1,120 @@
-"""Lightweight depthwise-separable backbone for K-FACE.
+"""Author: kienkk
 
-Design goals: run >60 FPS on CPU (ONNXRuntime, fp32) at 320x320 input while
-keeping enough capacity for high recall/precision on small faces. Structure
-follows a MobileNet/ShuffleNet-style stage layout (stem -> 4 stages) with
-few channels and a light stem to stay fast on CPU.
+Config-driven backbone for K-FACE.
+
+Cost model that drives every choice here: for any conv layer,
+FLOPs = 2 x (output positions) x params. At 320x320 input that is
+3200 FLOPs per parameter at stride 8, 800 at stride 16 and 200 at
+stride 32. Therefore model capacity (parameters) is placed at stride
+16/32, and everything running at stride 8 or finer is kept as thin as
+possible. ONNXRuntime CPU latency then tracks FLOPs plus a per-node
+overhead, so node count matters too.
+
+Block types (selectable per stage from the config):
+- "dw"    : MobileNetV1 block, depthwise 3x3 -> pointwise 1x1 (2 conv nodes).
+            Cheapest option; used at high resolution.
+- "ir"    : inverted residual, 1x1 expand -> depthwise 3x3 -> 1x1 project
+            with residual (3 conv nodes). Good params/FLOPs at mid res.
+- "dense" : residual 3x3 -> 3x3 (2 conv nodes). Fewest nodes per parameter,
+            fastest per FLOP on CPU; used where positions are few (stride 32).
+
+Every stage starts with a depthwise-downsample block (dw 3x3 stride 2 ->
+pw 1x1 cin->cout) so the expensive stride-2 step never runs a wide
+pointwise conv at the higher resolution.
 """
-import torch
 import torch.nn as nn
 
 
-def conv_bn(cin, cout, k=3, s=1, p=None, groups=1):
+def conv_bn(cin, cout, k=3, s=1, p=None, groups=1, act=True):
     if p is None:
         p = k // 2
-    return nn.Sequential(
+    layers = [
         nn.Conv2d(cin, cout, k, s, p, groups=groups, bias=False),
         nn.BatchNorm2d(cout),
-        nn.ReLU(inplace=True),
-    )
+    ]
+    if act:
+        layers.append(nn.ReLU(inplace=True))
+    return nn.Sequential(*layers)
 
 
-class DWSepBlock(nn.Module):
-    """Depthwise 3x3 + Pointwise 1x1, with residual add when shapes match."""
+class DWBlock(nn.Module):
+    """depthwise 3x3 (optionally stride 2) -> pointwise 1x1."""
 
-    def __init__(self, cin, cout, stride=1, expand=2):
+    def __init__(self, cin, cout, stride=1):
+        super().__init__()
+        self.dw = conv_bn(cin, cin, k=3, s=stride, groups=cin)
+        self.pw = conv_bn(cin, cout, k=1)
+
+    def forward(self, x):
+        return self.pw(self.dw(x))
+
+
+class IRBlock(nn.Module):
+    """1x1 expand -> depthwise 3x3 -> 1x1 project, residual (stride 1 only)."""
+
+    def __init__(self, cin, cout, expand=2):
         super().__init__()
         mid = int(cin * expand)
-        self.use_res = stride == 1 and cin == cout
-        self.pw1 = conv_bn(cin, mid, k=1, s=1)
-        self.dw = conv_bn(mid, mid, k=3, s=stride, groups=mid)
-        self.pw2 = nn.Sequential(
-            nn.Conv2d(mid, cout, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(cout),
-        )
+        self.use_res = cin == cout
+        self.pw1 = conv_bn(cin, mid, k=1)
+        self.dw = conv_bn(mid, mid, k=3, groups=mid)
+        self.pw2 = conv_bn(mid, cout, k=1, act=False)
         self.act = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        out = self.pw1(x)
-        out = self.dw(out)
-        out = self.pw2(out)
+        out = self.pw2(self.dw(self.pw1(x)))
         if self.use_res:
             out = out + x
         return self.act(out)
 
 
-def make_stage(cin, cout, num_blocks, stride, expand=2):
-    layers = [DWSepBlock(cin, cout, stride=stride, expand=expand)]
-    for _ in range(num_blocks - 1):
-        layers.append(DWSepBlock(cout, cout, stride=1, expand=expand))
+class DenseBlock(nn.Module):
+    """residual 3x3 -> 3x3 (stride 1, cin == cout)."""
+
+    def __init__(self, cin, cout):
+        super().__init__()
+        assert cin == cout
+        self.conv1 = conv_bn(cin, cout, k=3)
+        self.conv2 = conv_bn(cout, cout, k=3, act=False)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.act(self.conv2(self.conv1(x)) + x)
+
+
+def make_stage(cin, spec):
+    cout = spec["channels"]
+    layers = [DWBlock(cin, cout, stride=2)]
+    for _ in range(spec.get("blocks", 0)):
+        t = spec["type"]
+        if t == "dw":
+            layers.append(DWBlock(cout, cout))
+        elif t == "ir":
+            layers.append(IRBlock(cout, cout, expand=spec.get("expand", 2)))
+        elif t == "dense":
+            layers.append(DenseBlock(cout, cout))
+        else:
+            raise ValueError(f"unknown block type {t}")
     return nn.Sequential(*layers)
 
 
 class KFaceBackbone(nn.Module):
-    """Outputs feature maps at stride 8 (C3), 16 (C4), 32 (C5).
-
-    width_mult scales all channel counts; depth_mult scales block counts.
-    Defaults ("nano") target CPU real-time; use "small" for higher accuracy
-    when GPU inference or a slower FPS budget is acceptable.
+    """stages: 4 specs for strides 4, 8, 16, 32 — each
+    {"type": "dw"|"ir"|"dense", "channels": int, "blocks": int, "expand": float}.
+    Returns features at stride 8, 16, 32.
     """
 
-    def __init__(self, width_mult=1.0, depth_mult=1.0):
+    def __init__(self, stem_channels=16, stages=None):
         super().__init__()
-
-        def c(ch):
-            return max(8, int(round(ch * width_mult / 8)) * 8)
-
-        def d(n):
-            return max(1, int(round(n * depth_mult)))
-
-        self.stem = nn.Sequential(
-            conv_bn(3, c(16), k=3, s=2),          # stride 2
-            DWSepBlock(c(16), c(16), stride=1),
-        )
-        self.stage2 = make_stage(c(16), c(32), d(2), stride=2)   # stride 4
-        self.stage3 = make_stage(c(32), c(64), d(2), stride=2)   # stride 8  -> C3
-        self.stage4 = make_stage(c(64), c(96), d(3), stride=2)   # stride 16 -> C4
-        self.stage5 = make_stage(c(96), c(128), d(3), stride=2)  # stride 32 -> C5
-
-        self.out_channels = (c(64), c(96), c(128))
+        assert stages is not None and len(stages) == 4
+        self.stem = conv_bn(3, stem_channels, k=3, s=2)
+        built = []
+        cin = stem_channels
+        for spec in stages:
+            built.append(make_stage(cin, spec))
+            cin = spec["channels"]
+        self.stage2, self.stage3, self.stage4, self.stage5 = built
+        self.out_channels = tuple(s["channels"] for s in stages[1:])
 
     def forward(self, x):
         x = self.stem(x)
@@ -85,10 +123,3 @@ class KFaceBackbone(nn.Module):
         c4 = self.stage4(c3)
         c5 = self.stage5(c4)
         return c3, c4, c5
-
-
-if __name__ == "__main__":
-    net = KFaceBackbone()
-    y = net(torch.randn(1, 3, 320, 320))
-    for t in y:
-        print(t.shape)

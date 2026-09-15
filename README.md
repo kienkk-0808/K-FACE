@@ -1,46 +1,47 @@
 # K-FACE
 
-Thư viện train model face detection + 5-point landmark (kps), kiến trúc nhẹ,
-mục tiêu **>60 FPS trên CPU** (ONNXRuntime, fp32, input 320x320) với độ chính
-xác cao nhất có thể trong ngân sách tốc độ đó.
+Thư viện huấn luyện model phát hiện khuôn mặt + 5 điểm landmark (kps), kiến
+trúc nhẹ, tối ưu cho suy luận trên CPU với tốc độ thời gian thực và độ chính
+xác cao.
 
-## Kiến trúc
+**Tác giả:** kienkk
 
-- Backbone **depthwise-separable conv** (MobileNet-style), 3 stage output
-  (stride 8/16/32) → FLOPs thấp trên CPU.
-- Neck là **PAFPN rút gọn** (top-down + 1 bottom-up pass), giữ đủ ngữ cảnh
-  đa tỉ lệ cho mặt nhỏ mà không tốn nhiều compute ở exact resolution cao.
-- Head **shared-stem giữa 3 stride** để giảm tham số, có `Scale` học được
-  theo từng stride bù cho việc share trọng số.
-- Anchor-based, 2 anchor/vị trí, xuất cls + box + 5 điểm landmark (kps).
-- Có 2 config sẵn: `kface_n` (nano, ưu tiên FPS) và `kface_s` (small, ưu tiên
-  accuracy) — đổi `width_mult`/`depth_mult`/`input_size` để tinh chỉnh
-  trade-off mà không cần sửa code.
+## Tính năng
+
+- Kiến trúc anchor-based, backbone lai (depthwise-separable ở tầng phân
+  giải cao + dense residual ở tầng sâu) để tối ưu tốc độ CPU thực tế, không
+  chỉ tối ưu FLOPs trên giấy.
+- Đầu ra: bounding box + 5 điểm landmark khuôn mặt (mắt trái/phải, mũi, khóe
+  miệng trái/phải).
+- Head dùng chung trọng số giữa 3 mức FPN (stride 8/16/32) để giảm tham số.
+- Toàn bộ kiến trúc (số kênh, số block, loại block) cấu hình qua file YAML,
+  không cần sửa code để đổi cấu hình nhẹ/nặng.
+- Pipeline train đầy đủ: ATSS label assignment, Focal Loss + GIoU Loss,
+  EMA weights, warm-up + cosine LR, augmentation (random crop theo khuôn
+  mặt, flip, photometric).
+- Export ONNX, benchmark tốc độ và đánh giá AP@0.5 trên WIDER FACE có sẵn.
 
 ## Cấu trúc thư viện
 
 ```
 kface/
-  models/
-    backbone.py    # depthwise-separable backbone, 3 stage output (stride 8/16/32)
-    neck.py         # PAFPN rút gọn
-    head.py         # shared-stem head: cls + box + kps (5 điểm)
-    detector.py     # ghép model, flatten output, predict() (decode+NMS) khi infer bằng Python
-  data/
-    dataset.py      # WIDER FACE (định dạng RetinaFace label.txt, có landmark)
-    augment.py       # random crop theo box mặt, flip, color jitter, resize+pad
-  losses/
-    losses.py       # Focal loss (cls) + Smooth L1 (box, kps) + anchor matching
-  utils/
-    box_utils.py    # sinh anchor, encode/decode box+kps, IoU, NMS
-  train.py           # training loop (SGD + cosine LR)
+  models/backbone.py   # backbone cấu hình theo stage (dw / inverted-residual / dense block)
+  models/neck.py        # FPN top-down
+  models/head.py        # head tách cls/reg, share trọng số giữa các stride
+  models/detector.py     # ghép model, flatten output, predict(), build_model(cfg)
+  data/dataset.py       # WIDER FACE label.txt (định dạng RetinaFace, có landmark)
+  data/augment.py       # augmentation lúc train
+  losses/losses.py      # ATSS + Focal + GIoU + Smooth-L1 kps
+  utils/box_utils.py    # anchor, encode/decode, IoU, NMS
+  train.py              # training loop
 tools/
-  export_onnx.py     # export checkpoint -> ONNX (raw cls/box/kps, decode+NMS ở Python)
-  infer.py            # infer ảnh bằng ONNXRuntime, vẽ box + 5 điểm landmark
-  benchmark.py        # đo FPS thực tế trên CPU (ONNXRuntime)
+  export_onnx.py        # checkpoint (EMA) → ONNX
+  infer.py               # infer ảnh bằng ONNXRuntime, vẽ box + 5 landmark
+  benchmark.py           # đo tốc độ suy luận trên CPU
+  eval_widerface.py      # đánh giá AP@0.5 trên WIDER FACE
 configs/
-  kface_n.yaml         # nano — mục tiêu CPU >60 FPS
-  kface_s.yaml         # small — ưu tiên accuracy hơn FPS
+  kface_n.yaml           # cấu hình nano — ưu tiên tốc độ
+  kface_s.yaml           # cấu hình small — ưu tiên độ chính xác
 ```
 
 ## Cài đặt
@@ -51,9 +52,7 @@ pip install -r requirements.txt
 
 ## Chuẩn bị dữ liệu
 
-Tải WIDER FACE + nhãn landmark theo định dạng RetinaFace
-(https://github.com/biubug6/Pytorch_Retinaface — file `label.txt` chuẩn),
-đặt vào:
+Dữ liệu WIDER FACE với nhãn landmark theo định dạng RetinaFace (`label.txt`):
 
 ```
 data/widerface/train/images/...
@@ -66,9 +65,8 @@ data/widerface/val/label.txt
 
 ```bash
 python -m kface.train --config configs/kface_n.yaml
+python -m kface.train --config configs/kface_n.yaml --resume runs/kface_n/epoch_50.pth
 ```
-
-Checkpoint lưu ở `runs/kface_n/epoch_XXX.pth`. Resume: thêm `--resume runs/kface_n/epoch_50.pth`.
 
 ## Export ONNX
 
@@ -76,30 +74,40 @@ Checkpoint lưu ở `runs/kface_n/epoch_XXX.pth`. Resume: thêm `--resume runs/k
 python tools/export_onnx.py --ckpt runs/kface_n/epoch_299.pth --out kface_n.onnx --size 320
 ```
 
-## Infer thử
+## Infer
 
 ```bash
 python tools/infer.py --model kface_n.onnx --image test.jpg --size 320
 ```
 
-## Đo FPS thực tế trên CPU
+## Đo tốc độ
 
 ```bash
 python tools/benchmark.py --model kface_n.onnx --size 320 --threads 4
 ```
 
-`configs/kface_n.yaml` (width_mult=0.75, neck=48 kênh, input 320) là điểm khởi
-đầu để đạt >60 FPS trên CPU đa nhân hiện đại; nếu máy đích yếu hơn, giảm tiếp
-`input_size` (VD 256) hoặc `width_mult` (VD 0.5) rồi train lại — kiến trúc
-không đổi, chỉ scale nhẹ.
+## Đánh giá độ chính xác (WIDER FACE)
 
-## Ghi chú độ chính xác vs tốc độ
+```bash
+python tools/eval_widerface.py --label data/widerface/val/label.txt \
+    --images data/widerface/val/images --size 320 --kface kface_n.onnx
+```
 
-- Tăng `neck_channels`, `width_mult`, `depth_mult`, hoặc `input_size` → tăng
-  accuracy, giảm FPS. Dùng `kface_s.yaml` làm mốc tham chiếu accuracy cao hơn.
-- Anchor scale trong config (`scales_per_stride`) nên chỉnh theo phân bố kích
-  thước mặt của tập dữ liệu/triển khai thực tế (mặt nhỏ nhiều → thêm scale nhỏ
-  ở stride 8).
-- Loss dùng Focal Loss cho cls (không cần OHEM thủ công) + Smooth L1 cho box
-  và kps; landmark chỉ tính loss trên các anchor dương có nhãn landmark hợp lệ
-  (WIDER FACE không phải box nào cũng có landmark).
+In AP@0.5 tổng và theo cỡ khuôn mặt (small <32px, medium 32–96px, large >96px).
+
+## Cấu hình có sẵn
+
+| Config | Đặc điểm |
+|---|---|
+| `kface_n.yaml` | Nhẹ, ưu tiên tốc độ suy luận trên CPU |
+| `kface_s.yaml` | Nhiều tham số hơn, ưu tiên độ chính xác |
+
+Đổi `stages`, `neck_channels`, `head_stem_blocks` trong YAML để tinh chỉnh
+trade-off tốc độ/độ chính xác theo thiết bị triển khai — không cần sửa code.
+
+## Ghi chú
+
+- Nếu thiết bị đích yếu hơn: giảm số block ở stage cuối (stride 32) trước,
+  sau đó đến `neck_channels`.
+- Tăng độ chính xác mà không đổi tốc độ suy luận: train ở `input_size` lớn
+  hơn, tăng số epoch, thêm augmentation mạnh hơn trong `augment.py`.

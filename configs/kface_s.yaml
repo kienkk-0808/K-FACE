@@ -1,9 +1,18 @@
-# K-FACE "small" — higher accuracy, still CPU-friendly (~30-45 FPS @320, or
-# use for GPU / edge NPU deployment where FPS budget is looser).
+# K-FACE "small" — max capacity at roughly reference-detector latency. Author: kienkk
+#   1.567M params, 0.536 GFLOPs, 44 conv nodes @320x320.
+#   Benchmarked at parity-to-faster than the ~0.6M-param reference detector
+#   at 4 threads (0.78-1.01x latency), ~10% slower at 1 thread (1.11x),
+#   while carrying ~2.5x the parameters.
 model:
-  width_mult: 1.25
-  depth_mult: 1.5
-  neck_channels: 80
+  stem_channels: 16
+  stages:
+    - {type: dw,    channels: 32,  blocks: 1}
+    - {type: dw,    channels: 64,  blocks: 2}
+    - {type: ir,    channels: 128, blocks: 2, expand: 2}
+    - {type: dense, channels: 192, blocks: 2}
+  neck_channels: 48
+  neck_smooth: [dw, dense]
+  head_stem_blocks: 1
   num_anchors: 2
   strides: [8, 16, 32]
   scales_per_stride: [[16, 32], [64, 128], [256, 512]]
@@ -15,15 +24,15 @@ data:
   val_images: data/widerface/val/images
 
 train:
-  input_size: 384
-  batch_size: 48
+  input_size: 320
+  batch_size: 64
   num_workers: 8
   epochs: 300
-  lr: 0.01
+  lr: 0.02
+  warmup_iters: 1000
   weight_decay: 0.0005
-  pos_iou: 0.4
-  neg_iou: 0.3
+  atss_topk: 9
   box_weight: 2.0
-  kps_weight: 1.0
+  kps_weight: 0.5
   log_interval: 20
   output_dir: runs/kface_s

@@ -1,4 +1,6 @@
-"""Anchor generation, box/landmark encode-decode, IoU, and NMS.
+"""Author: kienkk
+
+Anchor generation, box/landmark encode-decode, IoU, and NMS.
 
 Encoding uses a center-offset + log-scale scheme for boxes, and center-offset
 only for the 5 landmark points, with variance terms so the regression targets

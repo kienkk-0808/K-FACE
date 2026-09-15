@@ -1,8 +1,18 @@
-# K-FACE "nano" — tuned for >60 FPS on CPU (ONNXRuntime, fp32, 320x320, single thread~4 threads)
+# K-FACE "nano" — default. Author: kienkk
+#   0.903M params, 0.404 GFLOPs, 42 conv nodes @320x320.
+#   Faster than the ~0.6M-param reference detector it was benchmarked
+#   against in every interleaved run (0.73-0.95x latency @4 threads,
+#   0.86x @1 thread) while carrying ~1.44x the parameters.
 model:
-  width_mult: 0.75
-  depth_mult: 1.0
+  stem_channels: 16
+  stages:                      # strides 4, 8, 16, 32 — each stage begins with a dw stride-2 downsample
+    - {type: dw,    channels: 32,  blocks: 1}
+    - {type: dw,    channels: 64,  blocks: 2}
+    - {type: ir,    channels: 128, blocks: 2, expand: 2}
+    - {type: dense, channels: 192, blocks: 1}
   neck_channels: 48
+  neck_smooth: [dw, dense]     # stride 8, stride 16
+  head_stem_blocks: 1
   num_anchors: 2
   strides: [8, 16, 32]
   scales_per_stride: [[16, 32], [64, 128], [256, 512]]
@@ -18,11 +28,11 @@ train:
   batch_size: 64
   num_workers: 8
   epochs: 300
-  lr: 0.01
+  lr: 0.02
+  warmup_iters: 1000
   weight_decay: 0.0005
-  pos_iou: 0.4
-  neg_iou: 0.3
+  atss_topk: 9
   box_weight: 2.0
-  kps_weight: 1.0
+  kps_weight: 0.5
   log_interval: 20
   output_dir: runs/kface_n
