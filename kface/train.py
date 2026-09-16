@@ -22,13 +22,14 @@ import os
 import torch
 import yaml
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from kface.models.detector import build_model
 from kface.data.dataset import WiderFaceDataset, collate_fn
 from kface.data.augment import TrainTransform, MEAN, STD
 from kface.losses.losses import KFaceLoss
 from kface.utils.box_utils import generate_anchors
-from kface.eval import TorchValRunner, evaluate_full
+from kface.eval import evaluate_full_batched
 
 
 class ModelEMA:
@@ -195,10 +196,13 @@ def main():
     restore_best = tcfg.get("restore_best_on_plateau", True)
     save_every = tcfg.get("save_every", 1)
 
+    eval_batch_size = tcfg.get("eval_batch_size", 16)
+
     for epoch in range(start_epoch, epochs):
         model.train()
         running = {"loss": 0.0, "loss_cls": 0.0, "loss_box": 0.0, "loss_kps": 0.0}
-        for step, (imgs, targets) in enumerate(loader):
+        pbar = tqdm(loader, total=iters_per_epoch, desc=f"epoch {epoch}", unit="it")
+        for step, (imgs, targets) in enumerate(pbar):
             imgs = imgs.to(device, non_blocking=True)
             if channels_last:
                 imgs = imgs.to(memory_format=torch.channels_last)
@@ -225,19 +229,19 @@ def main():
 
             for k in running:
                 running[k] += float(losses[k].detach())
+            n = step + 1
+            pbar.set_postfix({k: f"{running[k] / n:.4f}" for k in running},
+                             lr=f"{scheduler.get_last_lr()[0]:.5f}")
             if step % tcfg["log_interval"] == 0:
-                n = step + 1
                 msg = " ".join(f"{k}={running[k] / n:.4f}" for k in running)
-                print(f"[epoch {epoch}][{step}/{iters_per_epoch}] {msg} "
-                      f"num_pos={losses['num_pos']} lr={scheduler.get_last_lr()[0]:.5f}")
+                tqdm.write(f"[epoch {epoch}][{step}/{iters_per_epoch}] {msg} "
+                          f"num_pos={losses['num_pos']} lr={scheduler.get_last_lr()[0]:.5f}")
 
         stop_early = False
         if val_samples is not None and (epoch + 1) % eval_interval == 0:
-            runner = TorchValRunner(ema.ema, anchors, size, device,
-                                    conf_thresh=tcfg.get("eval_conf", 0.02),
-                                    nms_thresh=tcfg.get("eval_nms", 0.4))
-            res, n_gt, ms = evaluate_full(runner, val_samples, tcfg.get("eval_conf", 0.02),
-                                          tcfg.get("eval_nms", 0.4))
+            res, n_gt, ms = evaluate_full_batched(ema.ema, anchors, val_samples, size, device,
+                                                  tcfg.get("eval_conf", 0.02), tcfg.get("eval_nms", 0.4),
+                                                  batch_size=eval_batch_size)
             metric = res[eval_metric_key]
             order = ["mAP", "AP50", "AP75", "small<32", "medium32-96", "large>96"]
             print(f"[epoch {epoch}] val: " +
