@@ -7,10 +7,12 @@ Usage:
 
 Validation / best-checkpoint / early stopping activate automatically when
 data.val_label + data.val_images exist: every train.eval_interval epochs,
-AP@0.5 is measured on the EMA weights (kface/eval.py) and best.pth is
-(re)saved on improvement; training stops early after
-train.early_stop_patience evaluations with no gain. last.pth is always
-the most recent epoch, for --resume.
+mAP/AP is measured on the EMA weights (kface/eval.py) and best.pth is
+(re)saved on improvement. On a non-improving eval, model+EMA weights are
+rolled back to best.pth (train.restore_best_on_plateau, default true)
+before training continues; early stopping kicks in after
+train.early_stop_patience such evals with no gain. last.pth is always the
+most recent epoch, for --resume.
 """
 import argparse
 import copy
@@ -162,6 +164,8 @@ def main():
     start_epoch = 0
     best_metric = -1.0
     best_res = None
+    best_state = None
+    best_ema_state = None
     no_improve = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
@@ -179,9 +183,16 @@ def main():
     output_dir = tcfg["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
+    best_path = os.path.join(output_dir, "best.pth")
+    if best_res is not None and os.path.exists(best_path):
+        best_ckpt = torch.load(best_path, map_location=device)
+        best_state = {k: v.clone() for k, v in best_ckpt["model"].items()}
+        best_ema_state = {k: v.clone() for k, v in best_ckpt["ema"].items()}
+
     eval_interval = tcfg.get("eval_interval", 10)
     eval_metric_key = tcfg.get("early_stop_metric", "AP50")
     early_stop_patience = tcfg.get("early_stop_patience", 0)  # 0 = disabled
+    restore_best = tcfg.get("restore_best_on_plateau", True)
     save_every = tcfg.get("save_every", 1)
 
     for epoch in range(start_epoch, epochs):
@@ -237,14 +248,20 @@ def main():
                 best_metric = metric
                 best_res = res
                 no_improve = 0
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                best_ema_state = {k: v.detach().clone() for k, v in ema.ema.state_dict().items()}
                 torch.save(make_checkpoint(model, ema, optimizer, scheduler, epoch, cfg,
                                            best_metric, best_res, no_improve),
-                          os.path.join(output_dir, "best.pth"))
+                          best_path)
                 print(f"  -> new best ({eval_metric_key}={100 * metric:.2f}), saved best.pth")
             else:
                 no_improve += 1
                 print(f"  -> no improvement ({no_improve}/{early_stop_patience or '∞'} since "
                       f"best {eval_metric_key}={100 * best_metric:.2f})")
+                if restore_best and best_state is not None:
+                    model.load_state_dict(best_state)
+                    ema.ema.load_state_dict(best_ema_state)
+                    print(f"  -> restored model+EMA weights from best.pth before continuing")
                 if early_stop_patience and no_improve >= early_stop_patience:
                     stop_early = True
 

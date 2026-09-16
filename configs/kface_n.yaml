@@ -43,4 +43,5 @@ train:
   eval_iou: 0.5
   early_stop_metric: AP50
   early_stop_patience: 6
+  restore_best_on_plateau: true
   save_every: 5
