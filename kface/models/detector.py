@@ -49,7 +49,7 @@ class KFaceDetector(nn.Module):
         return cls, box, kps
 
     @torch.no_grad()
-    def predict(self, x, anchors=None, conf_thresh=0.5, iou_thresh=0.4, scales=DEFAULT_SCALES):
+    def predict(self, x, anchors=None, conf_thresh=0.5, iou_thresh=0.4, scales=DEFAULT_SCALES, pre_nms_topk=2000):
         self.eval()
         cls_outs, box_outs, kps_outs = self.forward(x)
         cls, box, kps = self.flatten_all(cls_outs, box_outs, kps_outs)
@@ -65,10 +65,17 @@ class KFaceDetector(nn.Module):
             if mask.sum() == 0:
                 results.append((torch.zeros(0, 4), torch.zeros(0, 5, 2), torch.zeros(0)))
                 continue
-            a = anchors[mask]
-            boxes = decode_boxes(box[b][mask], a)
-            landm = decode_kps(kps[b][mask], a)
-            sc = scores[mask]
+            idx = mask.nonzero(as_tuple=True)[0]
+            if idx.numel() > pre_nms_topk:
+                # cap candidates before NMS — without this, an under-trained
+                # model with a low conf_thresh can pass tens of thousands of
+                # boxes into NMS, which is O(n^2) regardless of implementation
+                top = scores[idx].topk(pre_nms_topk).indices
+                idx = idx[top]
+            a = anchors[idx]
+            boxes = decode_boxes(box[b][idx], a)
+            landm = decode_kps(kps[b][idx], a)
+            sc = scores[idx]
             keep = nms(boxes, sc, iou_thresh=iou_thresh)
             results.append((boxes[keep], landm[keep], sc[keep]))
         return results

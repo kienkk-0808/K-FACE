@@ -4,6 +4,7 @@ Anchor generation, box/landmark encode-decode, IoU, and NMS.
 """
 import numpy as np
 import torch
+from torchvision.ops import nms as _tv_nms
 
 VARIANCE = (0.1, 0.2)
 
@@ -93,14 +94,8 @@ def decode_kps(deltas, anchors):
 
 
 def nms(boxes, scores, iou_thresh=0.4):
-    """Simple greedy NMS, numpy-friendly, used at inference/eval time."""
-    order = scores.argsort(descending=True)
-    keep = []
-    while order.numel() > 0:
-        i = order[0].item()
-        keep.append(i)
-        if order.numel() == 1:
-            break
-        ious = box_iou(boxes[i:i + 1], boxes[order[1:]])[0]
-        order = order[1:][ious <= iou_thresh]
-    return torch.tensor(keep, dtype=torch.long)
+    """torchvision's vectorized NMS — the previous pure-Python greedy loop
+    called .item() every iteration, forcing a GPU sync per box; with
+    thousands of candidates (common before the model is well-trained and
+    score_floor is low) that made eval take ~1s/image instead of ms/image."""
+    return _tv_nms(boxes, scores, iou_thresh)
