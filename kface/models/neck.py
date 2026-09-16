@@ -1,12 +1,7 @@
 """Author: kienkk
 
-Top-down FPN neck over 3 levels.
-
-Smoothing after each fusion is configurable per level ("dw" = depthwise
-3x3 -> pointwise 1x1, "dense" = plain 3x3). At stride 8 a dense 3x3 is
-the most expensive layer in the whole network (3200 FLOPs per parameter),
-so the default is dw there and dense at stride 16. Stride 32 is used
-directly from its lateral projection.
+Top-down FPN neck over 3 levels. Smoothing per level is configurable
+("dw" = depthwise-separable, "dense" = plain 3x3, "none" = skip).
 """
 import torch.nn as nn
 import torch.nn.functional as F

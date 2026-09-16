@@ -4,6 +4,13 @@ Training entrypoint for K-FACE.
 
 Usage:
     python -m kface.train --config configs/kface_n.yaml [--resume ckpt.pth]
+
+Validation / best-checkpoint / early stopping activate automatically when
+data.val_label + data.val_images exist: every train.eval_interval epochs,
+AP@0.5 is measured on the EMA weights (kface/eval.py) and best.pth is
+(re)saved on improvement; training stops early after
+train.early_stop_patience evaluations with no gain. last.pth is always
+the most recent epoch, for --resume.
 """
 import argparse
 import copy
@@ -16,15 +23,13 @@ from torch.utils.data import DataLoader
 
 from kface.models.detector import build_model
 from kface.data.dataset import WiderFaceDataset, collate_fn
-from kface.data.augment import TrainTransform
+from kface.data.augment import TrainTransform, MEAN, STD
 from kface.losses.losses import KFaceLoss
 from kface.utils.box_utils import generate_anchors
+from kface.eval import TorchValRunner, evaluate_full
 
 
 class ModelEMA:
-    """Exponential moving average of weights — evaluated/exported instead of
-    the raw weights; a consistent +0.5-1 AP for detectors at no inference cost."""
-
     def __init__(self, model, decay=0.9998):
         self.ema = copy.deepcopy(model).eval()
         self.decay = decay
@@ -51,38 +56,46 @@ def parse_args():
     return ap.parse_args()
 
 
+def make_checkpoint(model, ema, optimizer, scheduler, epoch, cfg, best_metric, best_res, no_improve):
+    return {
+        "model": model.state_dict(),
+        "ema": ema.ema.state_dict(),
+        "ema_updates": ema.updates,
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "epoch": epoch,
+        "cfg": cfg,
+        "best_metric": best_metric,
+        "best_res": best_res,
+        "no_improve": no_improve,
+    }
+
+
 def main():
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    mcfg, tcfg = cfg["model"], cfg["train"]
+    mcfg, tcfg, dcfg = cfg["model"], cfg["train"], cfg["data"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     size = tcfg["input_size"]
     strides = tuple(mcfg["strides"])
 
     use_amp = device.type == "cuda"
-    # bf16 has the same exponent range as fp32 (no gradient underflow/overflow),
-    # so it needs no GradScaler and is what Ada-generation GPUs (e.g. L4) run
-    # tensor-core matmuls/convs at natively — cheaper and simpler than fp16.
     amp_dtype = torch.bfloat16 if tcfg.get("amp_dtype", "bf16") == "bf16" else torch.float16
     use_scaler = use_amp and amp_dtype == torch.float16
     channels_last = tcfg.get("channels_last", True) and use_amp
 
     if use_amp:
-        # TF32 speeds up the fp32 fallback paths (BN stats, loss) for free on
-        # Ampere+/Ada GPUs; cudnn.benchmark autotunes conv algorithms since
-        # every batch here has the same fixed input shape.
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
 
-    dataset = WiderFaceDataset(cfg["data"]["train_label"], cfg["data"]["train_images"],
-                               transform=TrainTransform(size=size))
+    dataset = WiderFaceDataset(dcfg["train_label"], dcfg["train_images"], transform=TrainTransform(size=size))
     total_boxes = sum(len(s[1]) for s in dataset.samples)
     if total_boxes == 0:
         raise ValueError(
-            f"'{cfg['data']['train_label']}' has zero ground-truth boxes across "
+            f"'{dcfg['train_label']}' has zero ground-truth boxes across "
             f"{len(dataset.samples)} images — looks like a plain image list "
             "(e.g. wider_val.txt), not an annotated label.txt. Training on it "
             "would silently converge to 'always predict no face' with no error. "
@@ -90,6 +103,25 @@ def main():
         )
     print(f"train images={len(dataset.samples)} boxes={total_boxes} "
           f"(avg {total_boxes / len(dataset.samples):.1f}/image)")
+
+    val_label, val_images = dcfg.get("val_label"), dcfg.get("val_images")
+    val_samples = None
+    if val_label and val_images and os.path.exists(val_label):
+        val_ds = WiderFaceDataset(val_label, val_images)
+        val_boxes = sum(len(s[1]) for s in val_ds.samples)
+        if val_boxes == 0:
+            print(f"WARNING: '{val_label}' has zero ground-truth boxes (plain image "
+                  "list?) — skipping in-training validation / early stopping.")
+        else:
+            eval_max = tcfg.get("eval_max_images", 500)
+            val_samples = val_ds.samples[:eval_max] if eval_max else val_ds.samples
+            print(f"val images={len(val_samples)} boxes={sum(len(s[1]) for s in val_samples)} "
+                  f"(evaluating every {tcfg.get('eval_interval', 10)} epochs)")
+    else:
+        print("No val_label/val_images configured or file missing — "
+              "in-training validation, best-checkpoint tracking and early "
+              "stopping are all disabled; every epoch is saved as-is.")
+
     num_workers = tcfg["num_workers"]
     loader = DataLoader(dataset, batch_size=tcfg["batch_size"], shuffle=True,
                         num_workers=num_workers, collate_fn=collate_fn,
@@ -101,6 +133,9 @@ def main():
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
     ema = ModelEMA(model)
+
+    mean_t = torch.tensor(MEAN, device=device).view(1, 3, 1, 1)
+    std_t = torch.tensor(STD, device=device).view(1, 3, 1, 1)
 
     anchors = generate_anchors(size, strides=strides,
                                scales_per_stride=tuple(tuple(s) for s in mcfg["scales_per_stride"])).to(device)
@@ -125,6 +160,9 @@ def main():
     scaler = torch.amp.GradScaler(enabled=use_scaler)
 
     start_epoch = 0
+    best_metric = -1.0
+    best_res = None
+    no_improve = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model"])
@@ -134,8 +172,17 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         start_epoch = ckpt["epoch"] + 1
+        best_metric = ckpt.get("best_metric", -1.0)
+        best_res = ckpt.get("best_res")
+        no_improve = ckpt.get("no_improve", 0)
 
-    os.makedirs(tcfg["output_dir"], exist_ok=True)
+    output_dir = tcfg["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
+
+    eval_interval = tcfg.get("eval_interval", 10)
+    eval_metric_key = tcfg.get("early_stop_metric", "AP50")
+    early_stop_patience = tcfg.get("early_stop_patience", 0)  # 0 = disabled
+    save_every = tcfg.get("save_every", 1)
 
     for epoch in range(start_epoch, epochs):
         model.train()
@@ -144,6 +191,7 @@ def main():
             imgs = imgs.to(device, non_blocking=True)
             if channels_last:
                 imgs = imgs.to(memory_format=torch.channels_last)
+            imgs = imgs.float().div_(255.0).sub_(mean_t).div_(std_t)
 
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 cls_outs, box_outs, kps_outs = model(imgs)
@@ -172,17 +220,51 @@ def main():
                 print(f"[epoch {epoch}][{step}/{iters_per_epoch}] {msg} "
                       f"num_pos={losses['num_pos']} lr={scheduler.get_last_lr()[0]:.5f}")
 
-        ckpt_path = os.path.join(tcfg["output_dir"], f"epoch_{epoch}.pth")
-        torch.save({
-            "model": model.state_dict(),
-            "ema": ema.ema.state_dict(),
-            "ema_updates": ema.updates,
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "epoch": epoch,
-            "cfg": cfg,
-        }, ckpt_path)
-        print(f"Saved checkpoint: {ckpt_path}")
+        stop_early = False
+        if val_samples is not None and (epoch + 1) % eval_interval == 0:
+            runner = TorchValRunner(ema.ema, anchors, size, device,
+                                    conf_thresh=tcfg.get("eval_conf", 0.02),
+                                    nms_thresh=tcfg.get("eval_nms", 0.4))
+            res, n_gt, ms = evaluate_full(runner, val_samples, tcfg.get("eval_conf", 0.02),
+                                          tcfg.get("eval_nms", 0.4))
+            metric = res[eval_metric_key]
+            order = ["mAP", "AP50", "AP75", "small<32", "medium32-96", "large>96"]
+            print(f"[epoch {epoch}] val: " +
+                  " ".join(f"{k}={100 * res[k]:.2f}" for k in order) +
+                  f"  ({ms:.1f} ms/img)")
+
+            if metric > best_metric:
+                best_metric = metric
+                best_res = res
+                no_improve = 0
+                torch.save(make_checkpoint(model, ema, optimizer, scheduler, epoch, cfg,
+                                           best_metric, best_res, no_improve),
+                          os.path.join(output_dir, "best.pth"))
+                print(f"  -> new best ({eval_metric_key}={100 * metric:.2f}), saved best.pth")
+            else:
+                no_improve += 1
+                print(f"  -> no improvement ({no_improve}/{early_stop_patience or '∞'} since "
+                      f"best {eval_metric_key}={100 * best_metric:.2f})")
+                if early_stop_patience and no_improve >= early_stop_patience:
+                    stop_early = True
+
+        ckpt = make_checkpoint(model, ema, optimizer, scheduler, epoch, cfg, best_metric, best_res, no_improve)
+        torch.save(ckpt, os.path.join(output_dir, "last.pth"))
+        if save_every and (epoch + 1) % save_every == 0:
+            ckpt_path = os.path.join(output_dir, f"epoch_{epoch}.pth")
+            torch.save(ckpt, ckpt_path)
+            print(f"Saved checkpoint: {ckpt_path}")
+
+        if stop_early:
+            print(f"Early stopping at epoch {epoch}: no {eval_metric_key} improvement for "
+                  f"{no_improve} evaluations. Best weights are in "
+                  f"{os.path.join(output_dir, 'best.pth')}.")
+            break
+
+    print(f"Done. Checkpoints are in {output_dir}.")
+    if best_res is not None:
+        order = ["mAP", "AP50", "AP75", "small<32", "medium32-96", "large>96"]
+        print("Best model (best.pth): " + " ".join(f"{k}={100 * best_res[k]:.2f}" for k in order))
 
 
 if __name__ == "__main__":

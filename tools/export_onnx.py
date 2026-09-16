@@ -1,9 +1,7 @@
 """Author: kienkk
 
-Export a trained K-FACE checkpoint to ONNX (fixed input size, opset 12,
-raw per-stride cls(sigmoid)/box/kps outputs — decode + NMS stay in Python
-so thresholds are tunable without re-exporting). Uses the EMA weights when
-the checkpoint has them.
+Export a trained K-FACE checkpoint to ONNX (raw per-stride cls/box/kps
+outputs; decode + NMS stay in Python). Uses EMA weights when present.
 
 Usage:
     python tools/export_onnx.py --ckpt runs/kface_n/epoch_299.pth --out kface_n.onnx --size 320

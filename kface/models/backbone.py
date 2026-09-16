@@ -1,26 +1,8 @@
 """Author: kienkk
 
-Config-driven backbone for K-FACE.
-
-Cost model that drives every choice here: for any conv layer,
-FLOPs = 2 x (output positions) x params. At 320x320 input that is
-3200 FLOPs per parameter at stride 8, 800 at stride 16 and 200 at
-stride 32. Therefore model capacity (parameters) is placed at stride
-16/32, and everything running at stride 8 or finer is kept as thin as
-possible. ONNXRuntime CPU latency then tracks FLOPs plus a per-node
-overhead, so node count matters too.
-
-Block types (selectable per stage from the config):
-- "dw"    : MobileNetV1 block, depthwise 3x3 -> pointwise 1x1 (2 conv nodes).
-            Cheapest option; used at high resolution.
-- "ir"    : inverted residual, 1x1 expand -> depthwise 3x3 -> 1x1 project
-            with residual (3 conv nodes). Good params/FLOPs at mid res.
-- "dense" : residual 3x3 -> 3x3 (2 conv nodes). Fewest nodes per parameter,
-            fastest per FLOP on CPU; used where positions are few (stride 32).
-
-Every stage starts with a depthwise-downsample block (dw 3x3 stride 2 ->
-pw 1x1 cin->cout) so the expensive stride-2 step never runs a wide
-pointwise conv at the higher resolution.
+Config-driven backbone for K-FACE. Block types: "dw" (depthwise-separable),
+"ir" (inverted residual), "dense" (plain residual). Returns features at
+stride 8, 16, 32.
 """
 import torch.nn as nn
 
@@ -99,11 +81,6 @@ def make_stage(cin, spec):
 
 
 class KFaceBackbone(nn.Module):
-    """stages: 4 specs for strides 4, 8, 16, 32 — each
-    {"type": "dw"|"ir"|"dense", "channels": int, "blocks": int, "expand": float}.
-    Returns features at stride 8, 16, 32.
-    """
-
     def __init__(self, stem_channels=16, stages=None):
         super().__init__()
         assert stages is not None and len(stages) == 4

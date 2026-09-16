@@ -1,7 +1,7 @@
 """Author: kienkk
 
-ONNXRuntime CPU inference for an exported K-FACE model: draws boxes +
-5-point landmarks, using kface.utils.box_utils for anchor decoding and NMS.
+ONNXRuntime inference for an exported K-FACE model: draws boxes + 5-point
+landmarks.
 
 Usage:
     python tools/infer.py --model kface_n.onnx --image test.jpg --size 320
@@ -64,9 +64,9 @@ def main():
 
     cls_list, box_list, kps_list = [], [], []
     for s in STRIDES:
-        cls = outs[f"s{s}_cls"]   # (1, A*1, H, W)
-        box = outs[f"s{s}_box"]   # (1, A*4, H, W)
-        kps = outs[f"s{s}_kps"]   # (1, A*10, H, W)
+        cls = outs[f"s{s}_cls"]
+        box = outs[f"s{s}_box"]
+        kps = outs[f"s{s}_kps"]
 
         def flat(t, last_dim):
             t = torch.from_numpy(t)

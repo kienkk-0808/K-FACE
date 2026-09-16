@@ -35,9 +35,7 @@ class KFaceDetector(nn.Module):
 
     @staticmethod
     def flatten_head_output(t, last_dim):
-        """(B, A*last_dim, H, W) -> (B, H*W*A, last_dim), matching the
-        anchor layout produced by generate_anchors (per-location, per-anchor).
-        """
+        """(B, A*last_dim, H, W) -> (B, H*W*A, last_dim)."""
         b, c, h, w = t.shape
         num_anchors = c // last_dim
         t = t.view(b, num_anchors, last_dim, h, w)
@@ -52,9 +50,6 @@ class KFaceDetector(nn.Module):
 
     @torch.no_grad()
     def predict(self, x, anchors=None, conf_thresh=0.5, iou_thresh=0.4, scales=DEFAULT_SCALES):
-        """Python-side inference helper. The exported ONNX graph stops at raw
-        cls/box/kps so decode + NMS thresholds can be tuned without re-export.
-        """
         self.eval()
         cls_outs, box_outs, kps_outs = self.forward(x)
         cls, box, kps = self.flatten_all(cls_outs, box_outs, kps_outs)
@@ -80,7 +75,6 @@ class KFaceDetector(nn.Module):
 
 
 def build_model(cfg):
-    """Build a detector from the `model:` section of a config dict."""
     m = cfg["model"]
     return KFaceDetector(
         stem_channels=m.get("stem_channels", 16),

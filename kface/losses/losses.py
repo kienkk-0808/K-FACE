@@ -1,19 +1,7 @@
 """Author: kienkk
 
-Loss functions + label assignment for K-FACE.
-
-- Assignment: ATSS (Adaptive Training Sample Selection). For each GT, the
-  top-k anchors by centre distance are taken from every pyramid level; the
-  IoU threshold is mean+std of those candidates' IoUs, and positives must
-  also have their centre inside the GT box. This adapts the threshold per
-  face size instead of one fixed IoU cut-off, which matters a lot for the
-  tiny faces that dominate WIDER FACE "hard". GTs left with no positive get
-  their single best-IoU anchor so nothing is dropped.
-- Classification: Focal Loss, normalised by number of positives.
-- Box: GIoU loss on decoded boxes (scale-invariant, directly optimises the
-  metric NMS/AP care about — better than Smooth-L1 on encoded deltas).
-- Landmarks: Smooth-L1 on encoded offsets, only for positives whose GT has
-  landmark labels (WIDER FACE annotates roughly half of the boxes).
+Loss functions + ATSS label assignment for K-FACE: Focal Loss (cls),
+GIoU loss (box), Smooth-L1 (landmarks, positives with landmark labels only).
 """
 import torch
 import torch.nn as nn
@@ -56,9 +44,7 @@ def giou_loss(pred, target, eps=1e-7):
 
 
 def atss_assign(anchors, level_sizes, gt_boxes, topk=9):
-    """anchors: (A,4) cxcywh; level_sizes: anchors per pyramid level (sum=A);
-    gt_boxes: (G,4) xyxy.  Returns pos_mask (A,) bool and matched_gt (A,) long.
-    """
+    """anchors: (A,4) cxcywh; gt_boxes: (G,4) xyxy -> pos_mask (A,), matched_gt (A,)."""
     device = anchors.device
     num_a, num_g = anchors.shape[0], gt_boxes.shape[0]
     a_xyxy = anchors_to_xyxy(anchors)
@@ -113,9 +99,6 @@ class KFaceLoss(nn.Module):
         self.kps_weight = kps_weight
 
     def forward(self, cls_pred, box_pred, kps_pred, anchors, targets):
-        """cls_pred:(B,A,1) box_pred:(B,A,4) kps_pred:(B,A,10) anchors:(A,4)
-        targets: list of dicts {boxes:(G,4) xyxy, kps:(G,5,2), has_kps:(G,)}
-        """
         device = cls_pred.device
         zero = torch.zeros((), device=device)
         total_cls, total_box, total_kps = zero, zero, zero

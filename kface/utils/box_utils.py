@@ -1,10 +1,6 @@
 """Author: kienkk
 
 Anchor generation, box/landmark encode-decode, IoU, and NMS.
-
-Encoding uses a center-offset + log-scale scheme for boxes, and center-offset
-only for the 5 landmark points, with variance terms so the regression targets
-stay in a well-conditioned range.
 """
 import numpy as np
 import torch
@@ -13,29 +9,14 @@ VARIANCE = (0.1, 0.2)
 
 
 def generate_anchors(input_size, strides=(8, 16, 32), scales_per_stride=((16, 32), (64, 128), (256, 512))):
-    """Return anchors as (cx, cy, w, h) in pixel units, one set per stride
-    concatenated in row-major (y, x, anchor) order — matches how the head's
-    conv output is reshaped/flattened.
-    """
+    """Anchors as (cx, cy, w, h), per-location per-anchor order matching
+    the head's flattened output layout."""
     if isinstance(input_size, int):
         in_h = in_w = input_size
     else:
         in_h, in_w = input_size
 
-    all_anchors = []
-    for stride, scales in zip(strides, scales_per_stride):
-        fh, fw = in_h // stride, in_w // stride
-        cy = (np.arange(fh, dtype=np.float32) + 0.5) * stride
-        cx = (np.arange(fw, dtype=np.float32) + 0.5) * stride
-        cx, cy = np.meshgrid(cx, cy)  # (fh, fw)
-        for s in scales:
-            a = np.stack([cx, cy, np.full_like(cx, s), np.full_like(cy, s)], axis=-1)
-            all_anchors.append(a.reshape(-1, 4))
-    # interleave per-location per-anchor order to match head output layout:
-    # for each stride, output is [fh*fw, num_anchors, 4] flattened -> we build
-    # that layout directly instead of concatenating per-scale blocks.
     anchors = []
-    idx = 0
     for stride, scales in zip(strides, scales_per_stride):
         fh, fw = in_h // stride, in_w // stride
         cy = (np.arange(fh, dtype=np.float32) + 0.5) * stride

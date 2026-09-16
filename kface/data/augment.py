@@ -1,8 +1,7 @@
 """Author: kienkk
 
-Training-time augmentation: SSD-style random crop anchored on a face box,
-random horizontal flip, photometric distortion, resize+pad to a square input.
-Keeps boxes/landmarks consistent through every transform.
+Training-time augmentation: random crop anchored on a face box, flip,
+photometric distortion, resize+pad to a square input.
 """
 import random
 import cv2
@@ -96,6 +95,10 @@ def resize_pad(img, target, size):
 
 
 class TrainTransform:
+    """Returns a uint8 HWC image (0-255); normalization happens on-device
+    in kface.train so DataLoader prefetch buffers stay small.
+    """
+
     def __init__(self, size=320):
         self.size = size
 
@@ -104,8 +107,7 @@ class TrainTransform:
         img, target = random_flip(img, target)
         img, target = resize_pad(img, target, self.size)
         img = photometric_distort(img)
-        img = (img / 255.0 - MEAN) / STD
-        return img.astype(np.float32), target
+        return img.astype(np.uint8), target
 
 
 class EvalTransform:

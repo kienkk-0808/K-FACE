@@ -1,20 +1,7 @@
 """Author: kienkk
 
-Decoupled detection head, weights shared across the 3 FPN strides.
-
-Separate classification / regression stems: cls wants translation-invariant
-features while box+kps regression wants precise localisation features, and
-sharing one stem for both costs accuracy.
-
-Cost note: the head runs on every level, so each of its parameters costs
-3200 + 800 + 200 = 4200 FLOPs at 320 input. Stems are therefore
-depthwise 3x3 -> pointwise 1x1 blocks, and the prediction layers are 1x1
-(the stem already provides 3x3 context). A 3x3 kps_pred alone would cost
-~50 MFLOPs — an eighth of the whole network's budget.
-
-Outputs per stride: cls (A x 1 logit), box (A x 4), kps (A x 10).
-A per-stride learnable Scale on box lets shared weights fit different
-stride magnitudes.
+Decoupled detection head (separate cls/reg stems), weights shared across
+the 3 FPN strides. Outputs per stride: cls (A x 1), box (A x 4), kps (A x 10).
 """
 import torch
 import torch.nn as nn

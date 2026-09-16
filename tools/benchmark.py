@@ -1,12 +1,8 @@
 """Author: kienkk
 
 Measure CPU inference latency/FPS of one or more ONNX models with
-identical session settings.
-
-All sessions are created and warmed up first, then models are timed in
-interleaved rounds (model A, B, C, A, B, C, ...) and the best round per
-model is reported. Interleaving removes the order bias seen when one model
-is timed while the CPU is still ramping up or another process is active.
+identical session settings, interleaved across rounds so results are
+comparable regardless of run order.
 
 Usage:
     python tools/benchmark.py --model kface_n.onnx --size 320 --threads 4

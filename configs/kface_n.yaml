@@ -1,17 +1,13 @@
-# K-FACE "nano" — default. Author: kienkk
-#   0.903M params, 0.404 GFLOPs, 42 conv nodes @320x320.
-#   Faster than the ~0.6M-param reference detector it was benchmarked
-#   against in every interleaved run (0.73-0.95x latency @4 threads,
-#   0.86x @1 thread) while carrying ~1.44x the parameters.
+# K-FACE "nano" — 0.903M params, 0.404 GFLOPs, 42 conv nodes @320x320.
 model:
   stem_channels: 16
-  stages:                      # strides 4, 8, 16, 32 — each stage begins with a dw stride-2 downsample
+  stages:
     - {type: dw,    channels: 32,  blocks: 1}
     - {type: dw,    channels: 64,  blocks: 2}
     - {type: ir,    channels: 128, blocks: 2, expand: 2}
     - {type: dense, channels: 192, blocks: 1}
   neck_channels: 48
-  neck_smooth: [dw, dense]     # stride 8, stride 16
+  neck_smooth: [dw, dense]
   head_stem_blocks: 1
   num_anchors: 2
   strides: [8, 16, 32]
@@ -24,18 +20,14 @@ data:
   val_images: data/widerface/val/images
 
 train:
-  # Trained at 640 for small-face recall (anchor scales are in absolute
-  # pixels, so they don't need retuning); export/infer can still target a
-  # smaller size (e.g. 320) for CPU throughput — the model is fully
-  # convolutional and resolution-agnostic at inference time.
   input_size: 640
-  batch_size: 96          # tuned for a single 24GB L4; lower if you see OOM
-  num_workers: 12         # match to the GPU instance's vCPU count
-  prefetch_factor: 4
-  amp_dtype: bf16         # Ada tensor cores run bf16 natively; no GradScaler needed
+  batch_size: 96
+  num_workers: 4
+  prefetch_factor: 2
+  amp_dtype: bf16
   channels_last: true
   epochs: 300
-  lr: 0.03                # linearly scaled from 0.02 @ bs64 to 0.03 @ bs96
+  lr: 0.03
   warmup_iters: 1000
   weight_decay: 0.0005
   atss_topk: 9
@@ -43,3 +35,12 @@ train:
   kps_weight: 0.5
   log_interval: 20
   output_dir: runs/kface_n
+
+  eval_interval: 5
+  eval_max_images: 500
+  eval_conf: 0.02
+  eval_nms: 0.4
+  eval_iou: 0.5
+  early_stop_metric: AP50
+  early_stop_patience: 6
+  save_every: 5
