@@ -37,7 +37,7 @@ train:
   output_dir: runs/kface_n
 
   eval_interval: 5
-  eval_max_images: 500
+  eval_max_images: 0
   eval_batch_size: 16
   eval_conf: 0.02
   eval_nms: 0.4
