@@ -262,7 +262,7 @@ def main():
                                                   tcfg.get("eval_conf", 0.02), tcfg.get("eval_nms", 0.4),
                                                   batch_size=eval_batch_size)
             metric = res[eval_metric_key]
-            order = ["mAP", "AP50", "AP75", "small<32", "medium32-96", "large>96"]
+            order = ["mAP", "AP50", "AP75", "small<10%", "medium10-30%", "large>30%"]
             print(f"[epoch {epoch}] val: " +
                   " ".join(f"{k}={100 * res[k]:.2f}" for k in order) +
                   f"  ({ms:.1f} ms/img)")
@@ -303,7 +303,7 @@ def main():
 
     print(f"Done. Checkpoints are in {output_dir}.")
     if best_res is not None:
-        order = ["mAP", "AP50", "AP75", "small<32", "medium32-96", "large>96"]
+        order = ["mAP", "AP50", "AP75", "small<10%", "medium10-30%", "large>30%"]
         print("Best model (best.pth): " + " ".join(f"{k}={100 * best_res[k]:.2f}" for k in order))
 
 

@@ -2,13 +2,13 @@
 
 Apples-to-apples mAP/AP@0.5/AP@0.75 (+ per-size AP@0.5) on WIDER FACE val
 for K-FACE and/or a reference ONNX detector: same images, letterbox size,
-score floor and NMS. Size buckets (small <32px, medium 32-96px, large
->96px) are a proxy for the official easy/medium/hard split, not the
-official leaderboard number.
+score floor and NMS. Size buckets are the GT face height as a fraction of
+its own image's height (small <10%, medium 10-30%, large >30%) — a proxy
+for the official easy/medium/hard split, not the official leaderboard number.
 
 Usage:
     python tools/eval_widerface.py --label data/widerface/val/label.txt \
-        --images data/widerface/val/images --size 320 \
+        --images data/widerface/val/images --size 640 \
         --kface kface_n.onnx --ref path/to/reference_model.onnx
 """
 import argparse
@@ -110,7 +110,7 @@ def main():
     ap.add_argument("--images", required=True)
     ap.add_argument("--kface", default=None)
     ap.add_argument("--ref", default=None, help="reference ONNX detector (ltrb-distance head format)")
-    ap.add_argument("--size", type=int, default=320)
+    ap.add_argument("--size", type=int, default=640)
     ap.add_argument("--score-floor", type=float, default=0.02)
     ap.add_argument("--nms", type=float, default=0.4)
     ap.add_argument("--threads", type=int, default=4)
@@ -137,7 +137,7 @@ def main():
     if not runners:
         ap.error("give --kface and/or --ref")
 
-    order = ["mAP", "AP50", "AP75", "small<32", "medium32-96", "large>96"]
+    order = ["mAP", "AP50", "AP75", "small<10%", "medium10-30%", "large>30%"]
     header = f"{'model':8s}" + "".join(f"{k:>14s}" for k in order) + f"{'ms/img':>9s}"
     print(header)
     for name, r in runners:

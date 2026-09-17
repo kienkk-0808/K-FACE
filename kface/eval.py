@@ -1,8 +1,8 @@
 """Author: kienkk
 
-Shared WIDER FACE detection metrics: AP@0.5 by GT face-size bucket
-(small < 32px, medium 32-96px, large > 96px). Used by
-tools/eval_widerface.py and kface/train.py.
+Shared WIDER FACE detection metrics: AP@0.5 by GT face-size bucket, sized
+as a fraction of each image's own height (small <10%, medium 10-30%,
+large >30%). Used by tools/eval_widerface.py and kface/train.py.
 """
 import time
 
@@ -11,7 +11,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-BUCKETS = {"all": (0, np.inf), "small<32": (0, 32), "medium32-96": (32, 96), "large>96": (96, np.inf)}
+# Buckets are the GT face height as a FRACTION of its own image's height,
+# not absolute pixels — a 96px face in a 4000px photo and a 96px face in a
+# 400px photo are not the same difficulty, and WIDER FACE images vary
+# wildly in resolution. Thresholds chosen from the actual ratio
+# distribution: <10% covers ~90% of faces (typical event/crowd photos),
+# 10-30% is normal portrait distance, >30% is close-up/webcam distance
+# (only ~1.4% of WIDER FACE faces, since it's not a selfie dataset).
+BUCKETS = {"all": (0, np.inf), "small<10%": (0, 0.10), "medium10-30%": (0.10, 0.30), "large>30%": (0.30, np.inf)}
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
@@ -86,7 +93,7 @@ def collect_detections(predict_fn, samples, score_floor=0.02, nms_thr=0.4, progr
             keep = nms_np(boxes, scores, nms_thr)
             boxes, scores = boxes[keep], scores[keep]
         order = scores.argsort()[::-1]
-        records.append((gt, boxes[order], scores[order]))
+        records.append((gt, boxes[order], scores[order], img.shape[0]))
     return records, t_infer / max(len(records), 1) * 1000
 
 
@@ -104,7 +111,7 @@ def collect_detections_batched(model, anchors, samples, size, device,
     batches = range(0, len(samples), batch_size)
     for start in tqdm(batches, desc="eval", disable=not progress, leave=False):
         chunk = samples[start:start + batch_size]
-        imgs, scales, gts = [], [], []
+        imgs, scales, gts, img_hs = [], [], [], []
         for img_path, gt, *_ in chunk:
             img = cv2.imread(img_path)
             if img is None:
@@ -116,6 +123,7 @@ def collect_detections_batched(model, anchors, samples, size, device,
             imgs.append(inp.transpose(2, 0, 1))
             scales.append(scale)
             gts.append(gt)
+            img_hs.append(img.shape[0])
         if not imgs:
             continue
         n_images += len(imgs)
@@ -126,25 +134,25 @@ def collect_detections_batched(model, anchors, samples, size, device,
             results = model.predict(batch, anchors=anchors, conf_thresh=score_floor, iou_thresh=nms_thr)
         t_infer += time.perf_counter() - t0
 
-        for (boxes, _kps, scores), scale, gt in zip(results, scales, gts):
+        for (boxes, _kps, scores), scale, gt, img_h in zip(results, scales, gts, img_hs):
             boxes = (boxes / scale).cpu().numpy()
             scores = scores.cpu().numpy()
             order = scores.argsort()[::-1]
-            records.append((gt, boxes[order], scores[order]))
+            records.append((gt, boxes[order], scores[order], img_h))
     return records, t_infer / max(n_images, 1) * 1000
 
 
 def ap_at_iou(records, iou_thr, size_range=None):
     """AP at a single IoU threshold, optionally restricted to GT boxes whose
-    height falls in size_range=(lo, hi). Detections matched to a GT outside
-    the bucket are ignored (neither TP nor FP) so buckets don't penalize
-    each other."""
+    height-to-image-height RATIO falls in size_range=(lo, hi). Detections
+    matched to a GT outside the bucket are ignored (neither TP nor FP) so
+    buckets don't penalize each other."""
     tp_fp = []
     n_gt = 0
-    for gt, boxes, scores in records:
-        gt_h = gt[:, 3] - gt[:, 1]
+    for gt, boxes, scores, img_h in records:
+        gt_ratio = (gt[:, 3] - gt[:, 1]) / img_h
         in_bucket = np.ones(len(gt), dtype=bool) if size_range is None else \
-            (gt_h >= size_range[0]) & (gt_h < size_range[1])
+            (gt_ratio >= size_range[0]) & (gt_ratio < size_range[1])
         n_gt += int(in_bucket.sum())
 
         matched_gt = np.full(len(boxes), -1, dtype=np.int64)
@@ -170,11 +178,18 @@ def ap_at_iou(records, iou_thr, size_range=None):
     return voc_ap(arr[:, 1], arr[:, 2], n_gt)
 
 
+def _bucket_gt_count(records, lo, hi):
+    return sum(
+        int((((g[:, 3] - g[:, 1]) / img_h >= lo) & ((g[:, 3] - g[:, 1]) / img_h < hi)).sum())
+        for g, _, _, img_h in records
+    )
+
+
 def _bucket_ap(records, iou_thr):
     result, n_gt = {}, {}
     for k, (lo, hi) in BUCKETS.items():
         result[k] = ap_at_iou(records, iou_thr, None if k == "all" else (lo, hi))
-        n_gt[k] = sum(int(((g[:, 3] - g[:, 1] >= lo) & (g[:, 3] - g[:, 1] < hi)).sum()) for g, _, _ in records)
+        n_gt[k] = _bucket_gt_count(records, lo, hi)
     return result, n_gt
 
 
@@ -192,7 +207,7 @@ def _full_metrics(records, iou_thrs=None):
         if k == "all":
             continue
         metrics[k] = ap_at_iou(records, 0.5, (lo, hi))
-        n_gt[k] = sum(int(((g[:, 3] - g[:, 1] >= lo) & (g[:, 3] - g[:, 1] < hi)).sum()) for g, _, _ in records)
+        n_gt[k] = _bucket_gt_count(records, lo, hi)
     return metrics, n_gt
 
 
