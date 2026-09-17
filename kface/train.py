@@ -19,9 +19,10 @@ import copy
 import math
 import os
 
+import numpy as np
 import torch
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 from kface.models.detector import build_model
@@ -125,9 +126,27 @@ def main():
               "in-training validation, best-checkpoint tracking and early "
               "stopping are all disabled; every epoch is saved as-is.")
 
+    # WIDER FACE's small-face imbalance is concentrated in a minority of
+    # extreme crowd images (one image alone has ~2000 tiny faces), not
+    # spread evenly — so boosting "images with a medium/large face" barely
+    # moves anything (92% of images already qualify). Instead, downweight
+    # by tiny-face COUNT per image (1/sqrt(1+n_small)) so a handful of
+    # mega-crowd images stop dominating every epoch's small/medium/large box ratio.
+    oversample_alpha = tcfg.get("oversample_alpha", 0.5)  # 0 = off
+    sampler = None
+    if oversample_alpha:
+        n_small = np.array([
+            int((s[1][:, 3] - s[1][:, 1] < 32).sum()) if len(s[1]) else 0
+            for s in dataset.samples
+        ])
+        weights = 1.0 / np.power(1.0 + n_small, oversample_alpha)
+        sampler = WeightedRandomSampler(weights, num_samples=len(dataset), replacement=True)
+        print(f"oversampling: reweighting by 1/(1+n_small_faces)^{oversample_alpha} "
+              f"(max small faces in one image: {int(n_small.max())})")
+
     num_workers = tcfg["num_workers"]
-    loader = DataLoader(dataset, batch_size=tcfg["batch_size"], shuffle=True,
-                        num_workers=num_workers, collate_fn=collate_fn,
+    loader = DataLoader(dataset, batch_size=tcfg["batch_size"], shuffle=sampler is None,
+                        sampler=sampler, num_workers=num_workers, collate_fn=collate_fn,
                         drop_last=True, pin_memory=device.type == "cuda",
                         persistent_workers=num_workers > 0,
                         prefetch_factor=tcfg.get("prefetch_factor", 4) if num_workers > 0 else None)

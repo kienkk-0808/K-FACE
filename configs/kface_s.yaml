@@ -24,6 +24,7 @@ train:
   batch_size: 64
   num_workers: 4
   prefetch_factor: 2
+  oversample_alpha: 0.5        # downweight images by 1/(1+n_small_faces)^alpha; 0 = off
   amp_dtype: bf16
   channels_last: true
   epochs: 300
