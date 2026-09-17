@@ -36,13 +36,13 @@ train:
   log_interval: 20
   output_dir: runs/kface_n
 
-  eval_interval: 5
+  eval_interval: 3
   eval_max_images: 0
   eval_batch_size: 16
-  eval_conf: 0.02
+  eval_conf: 0.05
   eval_nms: 0.4
   eval_iou: 0.5
   early_stop_metric: AP50
-  early_stop_patience: 6
+  early_stop_patience: 30
   restore_best_on_plateau: true
-  save_every: 5
+  save_every: 3
