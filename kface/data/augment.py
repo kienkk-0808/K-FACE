@@ -56,21 +56,31 @@ def random_crop(img, target, min_scale=0.3, max_scale=1.0, tries=50):
     return img, target
 
 
-def face_anchor_crop(img, target, margin_range=(0.1, 0.6)):
+def face_anchor_crop(img, target, margin_range=(0.1, 0.6), min_face_px=60):
     """Crop tightly around one randomly chosen face (with a random margin),
     so that face ends up filling most of the training image. WIDER FACE is
     almost entirely mid/long-distance event photography — only ~0.1% of
     faces fill more than 70% of their image — so plain area-based random_crop
     essentially never produces a close-up example. This covers that end of
-    the scale spectrum (e.g. webcam/selfie-distance use cases)."""
+    the scale spectrum (e.g. webcam/selfie-distance use cases).
+
+    The anchor face must be at least min_face_px in the SOURCE image:
+    anchoring on a tiny/blurry face and upscaling it to fill the frame
+    (measured up to ~49x with no size floor) teaches the model that
+    "large face" looks like a blurry blob, unlike real close-up faces —
+    a real quality/domain mismatch, not just lower resolution. If no face
+    in this image is large enough, this is skipped (falls back to
+    random_crop) rather than producing a degraded example."""
     boxes = target["boxes"]
     if boxes.shape[0] == 0:
         return img, target
-    idx = random.randrange(boxes.shape[0])
+    sizes = np.minimum(boxes[:, 2] - boxes[:, 0], boxes[:, 3] - boxes[:, 1])
+    candidates = np.nonzero(sizes >= min_face_px)[0]
+    if len(candidates) == 0:
+        return img, target
+    idx = int(random.choice(candidates))
     x1, y1, x2, y2 = boxes[idx]
     bw, bh = x2 - x1, y2 - y1
-    if bw <= 0 or bh <= 0:
-        return img, target
 
     margin = random.uniform(*margin_range)
     h, w = img.shape[:2]
