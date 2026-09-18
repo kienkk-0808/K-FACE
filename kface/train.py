@@ -284,7 +284,15 @@ def main():
                 if restore_best and best_state is not None:
                     model.load_state_dict(best_state)
                     ema.ema.load_state_dict(best_ema_state)
-                    print(f"  -> restored model+EMA weights from best.pth before continuing")
+                    # SGD momentum was accumulated along the trajectory that
+                    # just got discarded; carrying it into the restored
+                    # weights pushes the very next steps back in that failed
+                    # direction, which can trap training in a loop that
+                    # never truly improves. Clearing it lets the optimizer
+                    # re-accumulate momentum fresh from the restored point.
+                    optimizer.state.clear()
+                    print(f"  -> restored model+EMA weights from best.pth before continuing "
+                          f"(optimizer momentum reset)")
                 if early_stop_patience and no_improve >= early_stop_patience:
                     stop_early = True
 

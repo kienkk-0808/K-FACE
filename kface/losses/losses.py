@@ -109,8 +109,12 @@ class KFaceLoss(nn.Module):
             num_a = anchors.shape[0]
 
             if gt_boxes.shape[0] == 0:
+                # all-negative image: normalize by anchor count like the
+                # positive-image branch normalizes by num_pos below, so a
+                # negative image can't dominate the batch loss with an
+                # unnormalized sum over every anchor
                 cls_t = torch.zeros(num_a, device=device)
-                total_cls = total_cls + self.cls_loss(cls_pred[b, :, 0], cls_t)
+                total_cls = total_cls + self.cls_loss(cls_pred[b, :, 0], cls_t) / num_a
                 continue
 
             pos_mask, matched_gt = atss_assign(anchors, self.level_sizes, gt_boxes, self.topk)
