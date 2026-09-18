@@ -44,6 +44,6 @@ train:
   eval_nms: 0.4
   eval_iou: 0.5
   early_stop_metric: AP50
-  early_stop_patience: 6
+  early_stop_patience: 12
   restore_best_on_plateau: true
   save_every: 5

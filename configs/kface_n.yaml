@@ -28,7 +28,7 @@ train:
   amp_dtype: bf16
   channels_last: true
   epochs: 300
-  lr: 0.03
+  lr: 0.05
   warmup_iters: 1000
   weight_decay: 0.0005
   atss_topk: 9
@@ -37,13 +37,13 @@ train:
   log_interval: 20
   output_dir: runs/kface_n
 
-  eval_interval: 3
+  eval_interval: 5
   eval_max_images: 0
   eval_batch_size: 16
   eval_conf: 0.05
   eval_nms: 0.4
   eval_iou: 0.5
   early_stop_metric: AP50
-  early_stop_patience: 30
+  early_stop_patience: 12
   restore_best_on_plateau: true
-  save_every: 3
+  save_every: 5
