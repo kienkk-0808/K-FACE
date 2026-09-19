@@ -28,7 +28,7 @@ train:
   amp_dtype: bf16
   channels_last: true
   epochs: 300
-  lr: 0.05
+  lr: 0.02
   warmup_iters: 1000
   weight_decay: 0.0005
   atss_topk: 9
