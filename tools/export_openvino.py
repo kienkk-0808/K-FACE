@@ -24,7 +24,7 @@ def parse_args():
     ap.add_argument("--ckpt", default=None, help="training checkpoint (.pth)")
     ap.add_argument("--onnx", default=None, help="already-exported ONNX file")
     ap.add_argument("--out", required=True, help="output path/prefix, e.g. kface_n_ov -> kface_n_ov.xml/.bin")
-    ap.add_argument("--size", type=int, default=320, help="input size, only used with --ckpt")
+    ap.add_argument("--size", type=int, default=640, help="input size, only used with --ckpt")
     ap.add_argument("--opset", type=int, default=12, help="only used with --ckpt")
     ap.add_argument("--no-ema", action="store_true", help="use raw weights instead of EMA, only with --ckpt")
     ap.add_argument("--fp16", action="store_true", help="compress IR weights to fp16 (halves file size)")

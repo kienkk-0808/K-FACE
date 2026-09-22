@@ -1,7 +1,7 @@
 """Author: kienkk
 
-Top-down FPN neck over 3 levels. Smoothing per level is configurable
-("dw" = depthwise-separable, "dense" = plain 3x3, "none" = skip).
+Top-down FPN neck over N levels (2 or 3). Smoothing per level is
+configurable ("dw" = depthwise-separable, "dense" = plain 3x3, "none" = skip).
 """
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,21 +20,24 @@ def _smooth(kind, ch):
 
 
 class KFaceNeck(nn.Module):
-    def __init__(self, in_channels, out_channels=48, smooth=("dw", "dense")):
+    def __init__(self, in_channels, out_channels=48, smooth=("dense",)):
+        """in_channels: tuple of backbone output channels, finest stride
+        first (e.g. (c16, c32) or (c8, c16, c32) — matches KFaceBackbone's
+        forward() order). smooth: one entry per level below the coarsest
+        (len(in_channels) - 1 entries)."""
         super().__init__()
-        c3, c4, c5 = in_channels
-        self.lat3 = conv_bn(c3, out_channels, k=1)
-        self.lat4 = conv_bn(c4, out_channels, k=1)
-        self.lat5 = conv_bn(c5, out_channels, k=1)
-        self.smooth3 = _smooth(smooth[0], out_channels)
-        self.smooth4 = _smooth(smooth[1], out_channels)
+        n = len(in_channels)
+        assert len(smooth) == n - 1, f"need {n - 1} smooth entries for {n} levels, got {len(smooth)}"
+        self.lats = nn.ModuleList([conv_bn(c, out_channels, k=1) for c in in_channels])
+        self.smooths = nn.ModuleList([_smooth(s, out_channels) for s in smooth])
         self.out_channels = out_channels
 
     def forward(self, feats):
-        c3, c4, c5 = feats
-        p5 = self.lat5(c5)
-        p4 = self.lat4(c4) + F.interpolate(p5, size=c4.shape[-2:], mode="nearest")
-        p4 = self.smooth4(p4)
-        p3 = self.lat3(c3) + F.interpolate(p4, size=c3.shape[-2:], mode="nearest")
-        p3 = self.smooth3(p3)
-        return p3, p4, p5  # stride 8, 16, 32
+        # feats: finest stride first (e.g. c16, c32); last entry is coarsest
+        laterals = [lat(f) for lat, f in zip(self.lats, feats)]
+        outs = [None] * len(laterals)
+        outs[-1] = laterals[-1]
+        for i in range(len(laterals) - 2, -1, -1):
+            up = F.interpolate(outs[i + 1], size=laterals[i].shape[-2:], mode="nearest")
+            outs[i] = self.smooths[i](laterals[i] + up)
+        return tuple(outs)  # same order as input: finest stride first

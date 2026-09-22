@@ -1,7 +1,9 @@
 """Author: kienkk
 
 ONNXRuntime inference for an exported K-FACE model: draws boxes + 5-point
-landmarks.
+landmarks. Assumes the model was exported with kface.models.detector's
+current default strides/anchor scales — re-export if you change those in
+the training config.
 
 Usage:
     python tools/infer.py --model kface_n.onnx --image test.jpg --size 320
@@ -13,18 +15,17 @@ import onnxruntime as ort
 import torch
 
 from kface.utils.box_utils import generate_anchors, decode_boxes, decode_kps, nms
+from kface.models.detector import STRIDES, DEFAULT_SCALES as SCALES
 
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-STRIDES = (8, 16, 32)
-SCALES = ((16, 32), (64, 128), (256, 512))
 
 
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--image", required=True)
-    ap.add_argument("--size", type=int, default=320)
+    ap.add_argument("--size", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.5)
     ap.add_argument("--iou", type=float, default=0.4)
     ap.add_argument("--out", default="result.jpg")

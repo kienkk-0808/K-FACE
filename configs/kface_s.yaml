@@ -1,17 +1,25 @@
-# K-FACE "small" — 1.567M params, 0.536 GFLOPs, 44 conv nodes @320x320.
+# K-FACE "small" — same redesign as kface_n (no stride 8 / no small-face
+# priority, dedicated stride 64 for near-full-frame faces instead of a
+# lone anchor 512 at stride 32). Deploy target is 640x640: stride16's
+# feature map (40x40 @640) is the expensive one to widen, so it's kept the
+# same shape as kface_n's; the accuracy budget over kface_n goes entirely
+# into stride32/64 (256ch, cheap at their small grid sizes) instead.
+# Benchmarked at 640, 4 threads: ~59 FPS (vs kface_n's ~90, det_500m's ~95).
 model:
   stem_channels: 16
   stages:
     - {type: dw,    channels: 32,  blocks: 1}
-    - {type: dw,    channels: 64,  blocks: 2}
-    - {type: ir,    channels: 128, blocks: 2, expand: 2}
-    - {type: dense, channels: 192, blocks: 2}
-  neck_channels: 48
-  neck_smooth: [dw, dense]
-  head_stem_blocks: 1
-  num_anchors: 2
-  strides: [8, 16, 32]
-  scales_per_stride: [[16, 32], [64, 128], [256, 512]]
+    - {type: dw,    channels: 48,  blocks: 1}
+    - {type: ir,    channels: 128, blocks: 2, expand: 2, se: true}
+    - {type: dense, channels: 256, blocks: 3, se: true}
+    - {type: dense, channels: 256, blocks: 2, se: true}
+  out_stages: [2, 3, 4]
+  neck_channels: 80
+  neck_smooth: [dense, dense]
+  head_stem_blocks: 2
+  num_anchors: 3
+  strides: [16, 32, 64]
+  scales_per_stride: [[24, 48, 96], [128, 176, 256], [320, 416, 512]]
 
 data:
   train_label: data/widerface/train/label.txt

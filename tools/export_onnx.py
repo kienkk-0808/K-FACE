@@ -20,7 +20,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--size", type=int, default=320)
+    ap.add_argument("--size", type=int, default=640)
     ap.add_argument("--opset", type=int, default=12)
     ap.add_argument("--no-ema", action="store_true", help="export raw weights instead of EMA")
     return ap.parse_args()

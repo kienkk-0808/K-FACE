@@ -1,17 +1,31 @@
-# K-FACE "nano" — 0.903M params, 0.404 GFLOPs, 42 conv nodes @320x320.
+# K-FACE "nano" — redesigned to not chase small/far faces: stride 8 (the
+# most expensive level, only useful for faces <~5% of the frame) is dropped
+# entirely. A dedicated stride 64 level takes the near-full-frame range
+# instead of stretching stride 32's anchor list up to 512 (that gave poor
+# ATSS-matching IoU for close-up faces — see docs/architecture notes).
+# Only detects faces >=~5% of frame height reliably by design.
+#
+# Deploy target is 640x640 (not 320) — stride16's feature map is 4x bigger
+# in area at 640 than at 320, so it's where extra capacity costs the most.
+# SE there specifically was cut (its per-node overhead outweighs its FLOPs
+# on CPU at that resolution); SE stays on stride32/64 where the grid is
+# small enough for it to be near-free. Benchmarked at 640, 4 threads:
+# ~96.7 FPS — on par with the ~95-101 FPS reference detector at the same size.
 model:
   stem_channels: 16
-  stages:
+  stages:                        # stride 4, 8, 16, 32, 64 — stage 0/1 stay internal (see out_stages)
     - {type: dw,    channels: 32,  blocks: 1}
-    - {type: dw,    channels: 64,  blocks: 2}
+    - {type: dw,    channels: 48,  blocks: 1}
     - {type: ir,    channels: 128, blocks: 2, expand: 2}
-    - {type: dense, channels: 192, blocks: 1}
-  neck_channels: 48
-  neck_smooth: [dw, dense]
-  head_stem_blocks: 1
-  num_anchors: 2
-  strides: [8, 16, 32]
-  scales_per_stride: [[16, 32], [64, 128], [256, 512]]
+    - {type: dense, channels: 224, blocks: 2, se: true}
+    - {type: dense, channels: 224, blocks: 1, se: true}
+  out_stages: [2, 3, 4]           # stride 16 + 32 + 64 feed the neck/head
+  neck_channels: 64
+  neck_smooth: [dense, dense]     # smoothing after fusing stride16<-32 and stride32<-64
+  head_stem_blocks: 2
+  num_anchors: 3
+  strides: [16, 32, 64]
+  scales_per_stride: [[24, 48, 96], [128, 176, 256], [320, 416, 512]]
 
 data:
   train_label: data/widerface/train/label.txt
@@ -42,7 +56,6 @@ train:
   eval_batch_size: 16
   eval_conf: 0.05
   eval_nms: 0.4
-  eval_iou: 0.5
   early_stop_metric: AP50
   early_stop_patience: 12
   restore_best_on_plateau: true

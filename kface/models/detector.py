@@ -11,16 +11,16 @@ from .neck import KFaceNeck
 from .head import KFaceHead
 from ..utils.box_utils import generate_anchors, decode_boxes, decode_kps, nms
 
-STRIDES = (8, 16, 32)
-DEFAULT_SCALES = ((16, 32), (64, 128), (256, 512))
+STRIDES = (16, 32, 64)
+DEFAULT_SCALES = ((24, 48, 96), (128, 176, 256), (320, 416, 512))
 
 
 class KFaceDetector(nn.Module):
-    def __init__(self, stem_channels=16, stages=None, neck_channels=48,
-                 neck_smooth=("dw", "dense"), head_stem_blocks=1,
-                 num_anchors=2, strides=STRIDES):
+    def __init__(self, stem_channels=16, stages=None, out_stages=(2, 3, 4), neck_channels=48,
+                 neck_smooth=("dense", "dense"), head_stem_blocks=1,
+                 num_anchors=3, strides=STRIDES):
         super().__init__()
-        self.backbone = KFaceBackbone(stem_channels=stem_channels, stages=stages)
+        self.backbone = KFaceBackbone(stem_channels=stem_channels, stages=stages, out_stages=out_stages)
         self.neck = KFaceNeck(self.backbone.out_channels, out_channels=neck_channels,
                               smooth=tuple(neck_smooth))
         self.head = KFaceHead(neck_channels, num_anchors=num_anchors,
@@ -86,8 +86,9 @@ def build_model(cfg):
     return KFaceDetector(
         stem_channels=m.get("stem_channels", 16),
         stages=m["stages"],
+        out_stages=tuple(m.get("out_stages", (2, 3, 4))),
         neck_channels=m["neck_channels"],
-        neck_smooth=tuple(m.get("neck_smooth", ("dw", "dense"))),
+        neck_smooth=tuple(m.get("neck_smooth", ("dense", "dense"))),
         head_stem_blocks=m.get("head_stem_blocks", 1),
         num_anchors=m["num_anchors"],
         strides=tuple(m["strides"]),

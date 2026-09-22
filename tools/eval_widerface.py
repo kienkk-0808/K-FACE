@@ -22,9 +22,11 @@ import onnxruntime as ort
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from kface.data.dataset import WiderFaceDataset  # noqa: E402
 from kface.eval import IMAGENET_MEAN, IMAGENET_STD, VAR, evaluate_full, letterbox  # noqa: E402
+from kface.models.detector import STRIDES as KFACE_STRIDES, DEFAULT_SCALES as KFACE_SCALES  # noqa: E402
 
-STRIDES = (8, 16, 32)
-KFACE_SCALES = ((16, 32), (64, 128), (256, 512))
+# The reference detector is a separate, fixed architecture (unrelated to
+# K-FACE's own strides/scales above) — don't reuse KFACE_STRIDES for it.
+REF_STRIDES = (8, 16, 32)
 
 
 def make_session(path, threads):
@@ -44,7 +46,7 @@ class KFaceRunner:
     @staticmethod
     def _anchors(size):
         out = []
-        for stride, scales in zip(STRIDES, KFACE_SCALES):
+        for stride, scales in zip(KFACE_STRIDES, KFACE_SCALES):
             f = size // stride
             cy, cx = np.mgrid[:f, :f].astype(np.float32)
             cx = (cx.reshape(-1) + 0.5) * stride
@@ -59,7 +61,7 @@ class KFaceRunner:
         inp = ((rgb - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1)[None]
         outs = self.sess.run(None, {self.in_name: inp})
         cls, box = [], []
-        for i in range(len(STRIDES)):
+        for i in range(len(KFACE_STRIDES)):
             c, b = outs[3 * i], outs[3 * i + 1]  # (1,A*1,H,W), (1,A*4,H,W)
             _, ch, h, w = b.shape
             a = ch // 4
@@ -89,9 +91,9 @@ class RefDetRunner:
         net, scale = letterbox(img_bgr, self.size)
         inp = cv2.dnn.blobFromImage(net, 1.0 / 128, (self.size, self.size), (127.5, 127.5, 127.5), swapRB=True)
         outs = self.sess.run(None, {self.in_name: inp})
-        fmc = len(STRIDES)
+        fmc = len(REF_STRIDES)
         all_boxes, all_scores = [], []
-        for i, stride in enumerate(STRIDES):
+        for i, stride in enumerate(REF_STRIDES):
             scores = outs[i].reshape(-1)
             dist = outs[i + fmc] * stride
             f = self.size // stride
